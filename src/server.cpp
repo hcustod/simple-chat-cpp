@@ -7,12 +7,12 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-const int PORT = 8080;
+const int PORT = 5000;
 std::vector<int> clients;
 std::mutex m;
 
 void handle_client(int client_fd) {
-    char buffer[1028];
+    char buffer[1024];
     while (true) {
         ssize_t bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
         if (bytes <= 0) break;

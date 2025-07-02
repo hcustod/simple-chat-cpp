@@ -8,7 +8,7 @@
 const int PORT = 5000;
 const char* SERVER_IP = "127.0.0.1";
 
-void recieve_loop(int sock) {
+void receive_loop(int sock) {
     char buffer[1024];
     while (true) {
         ssize_t bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
@@ -32,7 +32,7 @@ int main() {
         return 1;
     }
 
-    std::thread(recieve_loop, sock).detach();
+    std::thread(receive_loop, sock).detach();
 
     std::string input;
     std::cout << "> ";
