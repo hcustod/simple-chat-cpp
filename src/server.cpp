@@ -11,6 +11,15 @@ const int PORT = 5000;
 std::vector<int> clients;
 std::mutex m;
 
+void broadcast(const std::string& message, int sender_fd) {
+    std::lock_guard<std::mutex> lock(m);
+    for (int client_fd : clients) {
+        if (client_fd != sender_fd) {
+            send(client_fd, message.c_str(), message.length(), 0);
+        }
+    }
+}
+
 void handle_client(int client_fd) {
     char buffer[1024];
     while (true) {
@@ -25,14 +34,6 @@ void handle_client(int client_fd) {
     clients.erase(std::remove(clients.begin(), clients.end(), client_fd), clients.end());
 }
 
-void broadcast(const std::string& message, int sender_fd) {
-    std::lock_guard<std::mutex> lock(m);
-    for (int client_fd : clients) {
-        if (client_fd != sender_fd) {
-            send(client_fd, message.c_str(), message.length(), 0);
-        }
-    }
-}
 
 int main() {
     // Server port
