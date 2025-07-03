@@ -17,10 +17,21 @@ void receive_loop(int sock) {
         std::cout << "\n" << buffer << "\n>";
         std::cout.flush();
     }
+}
 
+std::string get_time() {
+    time_t now = time(nullptr);
+    struct tm* local_time = localtime(&now);
+    char buffer[80];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", local_time);
+    return std::string(buffer);
 }
 
 int main() {
+    std::string username;
+    std::cout << "Enter your username: ";
+    std::getline(std::cin, username);
+
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
@@ -31,6 +42,8 @@ int main() {
         std::cerr << "Failed to connect to server.\n";
         return 1;
     }
+
+    send(sock, username.c_str(), username.length(), 0);
 
     std::thread(receive_loop, sock).detach();
 
