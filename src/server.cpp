@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unordered_map>
+#include <ctime>
 
 const int PORT = 5000;
 
@@ -21,6 +22,14 @@ void broadcast(const std::string& message, int sender_fd) {
             send(client_fd, message.c_str(), message.length(), 0);
         }
     }
+}
+
+std::string get_time() {
+    time_t now = time(nullptr);
+    struct tm* local_time = localtime(&now);
+    char buffer[80];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", local_time);
+    return std::string(buffer);
 }
 
 void handle_client(int client_fd) {
@@ -48,7 +57,7 @@ void handle_client(int client_fd) {
         if (bytes <= 0) break;
         buffer[bytes] = '\0';
 
-        std::string full_msg = client_name + ": " + buffer + "\n";
+        std::string full_msg = get_time() + " " + client_name + ":" + buffer + "\n";
         std::cout << full_msg << std::endl;
         broadcast(full_msg, client_fd);
     }
@@ -63,6 +72,7 @@ void handle_client(int client_fd) {
         broadcast(leave_message, client_fd);
     }
 }
+
 
 
 int main() {

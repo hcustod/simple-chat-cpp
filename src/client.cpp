@@ -19,14 +19,6 @@ void receive_loop(int sock) {
     }
 }
 
-std::string get_time() {
-    time_t now = time(nullptr);
-    struct tm* local_time = localtime(&now);
-    char buffer[80];
-    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", local_time);
-    return std::string(buffer);
-}
-
 int main() {
     std::string username;
     std::cout << "Enter your username: ";
