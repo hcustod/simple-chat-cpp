@@ -4,6 +4,9 @@
 #include <unistd.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sstream>
+
+#include "commands.h"
 
 const int PORT = 5000;
 const char* SERVER_IP = "127.0.0.1";
@@ -14,8 +17,21 @@ void receive_loop(int sock) {
         ssize_t bytes = recv(sock, buffer, sizeof(buffer) - 1, 0);
         if (bytes <= 0) break;
         buffer[bytes] = '\0';
-        std::cout << "\n" << buffer << "\n>";
-        std::cout.flush();
+        std::cout << "\r" << buffer << "\n> " << std::flush;
+    }
+}
+
+bool handle_command(const std::string& input, int sock) {
+    std::istringstream iss(input);
+    std::string cmd;
+    iss >> cmd;
+
+    auto it = ChatCommands::command_table.find(cmd);
+    if (it != ChatCommands::command_table.end()) {
+        return it->second(iss, sock); // calls command handler
+    } else {
+        std::cerr << "Unknown command: " << cmd << "\n";
+        return false;
     }
 }
 
@@ -30,6 +46,18 @@ int main() {
     server_addr.sin_port = htons(PORT);
     inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
 
+    if (username.empty() || username.length() > 100) {
+        std::cerr << "Username cannot be empty and must be less than 100 characters.\n";
+        return 1;
+    }
+
+    if (sock == -1) {
+        std::cerr << "Failed to create socket.\n";
+        return 1;
+    }
+
+    std::cout << "Connecting to server at... " << SERVER_IP << ":" << PORT << "...\n" << std::flush;
+
     if (connect(sock, (sockaddr*)&server_addr, sizeof(server_addr)) == -1) { 
         std::cerr << "Failed to connect to server.\n";
         return 1;
@@ -42,6 +70,20 @@ int main() {
     std::string input;
     std::cout << "> ";
     while (getline(std::cin, input)) {
+        if (input.length() > 1000) {
+            std::cerr << "Message too long. Please limit to 1000 characters.\n";
+            std::cout << "> ";
+            continue;
+        } 
+
+        if (input.rfind('/', 0) == 0) {
+            if (handle_command(input, sock)) {
+                break;
+            }
+            std::cout << "> ";
+            continue;
+        }
+
         send(sock, input.c_str(), input.length(), 0);
         std::cout << "> ";
     }
