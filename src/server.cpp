@@ -58,6 +58,26 @@ void handle_client(int client_fd) {
         buffer[bytes] = '\0';
 
         std::string full_msg = get_time() + " " + client_name + ":" + buffer + "\n";
+
+        // Replace above with: 
+        std::string msg(buffer);
+        if (msg.rfind("/name ", 0) == 0) {
+            std::string new_name = msg.substr(6);
+            std::lock_guard<std::mutex> lock(m);
+            std::string old_name = client_names[client_fd];
+            client_names[client_fd] = new_name;
+            std::string notice = old_name + " changed name to " + new_name + "\n";
+            broadcast(notice, client_fd);
+            std::cout << notice;
+            continue;
+        } else if (msg == "/exit") {
+            break;
+        } else {
+            std::string full_msg = get_time() + " " + client_names[client_fd] + ": " + msg + "\n";
+            std::cout << full_msg;
+            broadcast(full_msg, client_fd);
+        }
+
         std::cout << full_msg << std::endl;
         broadcast(full_msg, client_fd);
     }
