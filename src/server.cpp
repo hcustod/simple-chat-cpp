@@ -8,6 +8,9 @@
 #include <arpa/inet.h>
 #include <unordered_map>
 #include <ctime>
+#include <algorithm>
+
+#include "commands.h"
 
 const int PORT = 5000;
 
@@ -35,7 +38,8 @@ std::string get_time() {
 void handle_client(int client_fd) {
     char buffer[1024];
 
-    size_t name_bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+    // Get initial username
+    ssize_t name_bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
     if (name_bytes <= 0) {
         close(client_fd);
         return;
@@ -54,40 +58,59 @@ void handle_client(int client_fd) {
 
     while (true) {
         ssize_t bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-        if (bytes <= 0) break;
-        buffer[bytes] = '\0';
-
-        std::string full_msg = get_time() + " " + client_name + ":" + buffer + "\n";
-
-        // Replace above with: 
-        std::string msg(buffer);
-        if (msg.rfind("/name ", 0) == 0) {
-            std::string new_name = msg.substr(6);
-            std::lock_guard<std::mutex> lock(m);
-            std::string old_name = client_names[client_fd];
-            client_names[client_fd] = new_name;
-            std::string notice = old_name + " changed name to " + new_name + "\n";
-            broadcast(notice, client_fd);
-            std::cout << notice;
-            continue;
-        } else if (msg == "/exit") {
+        if (bytes <= 0) {
+            std::cout << "Client disconnected: " << client_name << "\n";
             break;
-        } else {
-            std::string full_msg = get_time() + " " + client_names[client_fd] + ": " + msg + "\n";
-            std::cout << full_msg;
-            broadcast(full_msg, client_fd);
         }
 
-        std::cout << full_msg << std::endl;
+        buffer[bytes] = '\0';
+        std::string msg(buffer);
+
+        // Sanitize message
+        msg.erase(std::remove(msg.begin(), msg.end(), '\n'), msg.end()); // Remove newlines
+        msg.erase(std::remove(msg.begin(), msg.end(), '\r'), msg.end()); // Remove carriage returns
+        msg.erase(std::remove(msg.begin(), msg.end(), '\t'), msg.end()); // Remove tabs
+        msg.erase(std::remove_if(msg.begin(), msg.end(), [](unsigned char c) {
+            return !std::isprint(c); // Remove non-printable characters
+        }), msg.end());
+        if (msg.empty()) continue; // Ignore empty messages
+        if (msg.length() > 1024) {
+            std::string error_msg = "Message too long. Max length is 1024 characters.\n";
+            send(client_fd, error_msg.c_str(), error_msg.length(), 0);
+            continue; // Skip broadcasting this message
+        }
+
+        // Handle server-side command
+        if (!msg.empty() && msg[0] == '/') {
+            std::istringstream iss(msg);
+            std::string command;
+            iss >> command;
+
+            auto it = ChatCommands::server_command_table.find(command);
+            if (it != ChatCommands::server_command_table.end()) {
+                it->second(client_fd, msg, client_names, clients, m);
+                continue; // Skip broadcasting this message
+            } else {
+                std::string error_msg = "Unknown command: " + command + "\n";
+                send(client_fd, error_msg.c_str(), error_msg.length(), 0);
+                continue;
+            }
+        }
+
+        // Handle standard message
+        std::string full_msg = get_time() + " " + client_names[client_fd] + ": " + msg + "\n";
+        std::cout << full_msg;
         broadcast(full_msg, client_fd);
     }
 
+    // Cleanup after disconnection 
     close(client_fd);
     {
         std::lock_guard<std::mutex> lock(m);
         clients.erase(std::remove(clients.begin(), clients.end(), client_fd), clients.end());
-        std::string leave_message = client_name + " has left the chat.\n";
         client_names.erase(client_fd);
+
+        std::string leave_message = client_name + " has left the chat.\n";
         std::cout << leave_message;
         broadcast(leave_message, client_fd);
     }
@@ -97,7 +120,16 @@ void handle_client(int client_fd) {
 
 int main() {
     // Server port
-    int server_conn = socket(AF_INET, SOCK_STREAM, 0);
+    int server_sock = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_sock < 0) {
+        std::cerr << "Failed to create socket.\n";
+        return 1;
+    }
+
+    // Set socket options to reuse address (for quick server restarts)
+    int opt = 1;
+    setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     // Set server addr
     sockaddr_in addr{};
@@ -106,22 +138,37 @@ int main() {
     addr.sin_addr.s_addr = INADDR_ANY;
 
     // Attach server to IP:Port and wait for incoming conns
-    bind(server_conn, (struct sockaddr*)&addr, sizeof(addr));
-    listen(server_conn, 10);
+    if (bind(server_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        std::cerr << "Failed to bind socket.\n";
+        close(server_sock);
+        return 1;
+    }
+    if (listen(server_sock, 10) < 0) {
+        std::cerr << "Failed to listen on socket.\n";
+        close(server_sock);
+        return 1;
+    }
 
-    std::cout << "Server listening on port " << PORT << std::endl;
+    std::cout << "Server listening on port... " << PORT << std::endl;
 
-    //
+    // Accept clients in a loop
     while (true) {
-        int client_conn = accept(server_conn, nullptr, nullptr);
+        int client_conn = accept(server_sock, nullptr, nullptr);
+
+        if (client_conn < 0) {
+            std::cerr << "Failed to accept client connection.\n";
+            continue;
+        }
+
         {
             std::lock_guard<std::mutex> lock(m);
             clients.push_back(client_conn);
         }
+
         std::thread(handle_client, client_conn).detach();
     }
 
-    close(server_conn);
+    close(server_sock);
     return 0;
 }
 

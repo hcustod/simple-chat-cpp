@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <chrono>
 
+// TODO: 
+// Redundancy here in having two lookup tables, one for client commands and one for server commands.
+
 namespace ChatCommands {
 
 namespace Config {
@@ -20,7 +23,7 @@ bool is_valid_username(const std::string& name) {
     }
     return name.find_first_of(" \t\n\r") == std::string::npos;
 }
-
+ 
 bool send_safe(int sock, const std::string& msg) {
     if (msg.length() > Config::MAX_MESSAGE_LENGTH) {
         std::cerr << "Message too long.\n";
@@ -108,4 +111,70 @@ std::unordered_map<std::string, CommandHandler> command_table = {
     }},
 };
 
+
+using ServerCommandHandler = std::function<void(
+    int client_fd, 
+    const std::string& raw,
+    std::unordered_map<int, std::string>& client_names, 
+    std::vector<int>& clients, 
+    std::mutex& m
+)>;
+
+std::unordered_map<std::string, ServerCommandHandler> server_command_table = {
+    {"/ping", [](int client_fd, const std::string&, auto&, auto&, auto&) {
+        std::string pong = "Server: pong\n";
+        send(client_fd, pong.c_str(), pong.length(), 0);
+    }},
+    {"/help", [](int client_fd, const std::string&, auto&, auto&, auto&) {
+        send_safe(client_fd, help_text);
+    }},
+    {"/who", [](int client_fd, const std::string&, auto& client_names, auto&, std::mutex& m) {
+        std::lock_guard<std::mutex> lock(m);
+        std::string list = "Connected users:\n";
+        for (const auto& [fd, name] : client_names) {
+            list += "  " + name + "\n";
+        }
+        send_safe(client_fd, list);
+    }},
+    {"/name", [](int client_fd, const std::string& raw, auto& client_names, auto&, std::mutex& m) {
+        std::istringstream iss(raw);
+        std::string cmd, new_name;
+        iss >> cmd >> new_name;
+
+        if (!is_valid_username(new_name)) {
+            std::string err = "Invalid username.\n";
+            send_safe(client_fd, err);
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(m);
+        std::string old_name = client_names[client_fd];
+        client_names[client_fd] = new_name;
+
+        std::string notice = old_name + " changed name to " + new_name + "\n";
+        for (const auto& [fd, _] : client_names) {
+            if (fd != client_fd) send_safe(fd, notice);
+        }
+    }},
+    {"/whisper", [](int client_fd, const std::string& raw, auto& client_names, auto&, std::mutex& m) {
+        std::istringstream iss(raw);
+        std::string cmd, target;
+        iss >> cmd >> target;
+        std::string msg;
+        std::getline(iss, msg);
+        msg.erase(0, msg.find_first_not_of(" \t"));
+
+        std::lock_guard<std::mutex> lock(m);
+        auto it = std::find_if(client_names.begin(), client_names.end(),
+            [&](const auto& p) { return p.second == target; });
+
+        if (it != client_names.end()) {
+            std::string reply = "(whisper from " + client_names[client_fd] + "): " + msg + "\n";
+            send_safe(it->first, reply);
+        } else {
+            send_safe(client_fd, "User not found.\n");
+        }
+    }}
+};
 }
+
