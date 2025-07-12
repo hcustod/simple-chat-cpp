@@ -86,15 +86,19 @@ void handle_client(int client_fd) {
             std::string command;
             iss >> command;
 
-            auto it = ChatCommands::server_command_table.find(command);
-            if (it != ChatCommands::server_command_table.end()) {
-                it->second(client_fd, msg, client_names, clients, m);
+            auto it = ChatCommands::unified_command_table.find(command);
+            if (it != ChatCommands::unified_command_table.end() && it->second.serverHandler) {
+                // Call the server-side command handler
+                it->second.serverHandler(client_fd, msg, client_names, clients, m);
                 continue; // Skip broadcasting this message
             } else {
+                // Unknown command
                 std::string error_msg = "Unknown command: " + command + "\n";
                 send(client_fd, error_msg.c_str(), error_msg.length(), 0);
-                continue;
+                continue; // Skip broadcasting this message
+
             }
+              
         }
 
         // Handle standard message
