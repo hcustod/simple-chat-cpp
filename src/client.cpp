@@ -21,17 +21,17 @@ void receive_loop(int sock) {
     }
 }
 
-bool handle_command(const std::string& input, int sock) {
+ChatCommands::CommandResult handle_command(const std::string& input, int sock) {
     std::istringstream iss(input);
     std::string cmd;
     iss >> cmd;
 
-    auto it = ChatCommands::command_table.find(cmd);
-    if (it != ChatCommands::command_table.end()) {
-        return it->second(iss, sock); // calls command handler
+    auto it = ChatCommands::unified_command_table.find(cmd);
+    if (it != ChatCommands::unified_command_table.end() && it->second.clientHandler) {
+        return it->second.clientHandler(iss, sock); // calls command handler
     } else {
         std::cerr << "Unknown command: " << cmd << "\n";
-        return false;
+        return ChatCommands::CommandResult::Invalid;
     }
 }
 
@@ -63,7 +63,11 @@ int main() {
         return 1;
     }
 
-    send(sock, username.c_str(), username.length(), 0);
+    if (send(sock, username.c_str(), username.length(), 0) == -1) {
+        std::cerr << "Failed to send username.\n";
+        close(sock);
+        return 1;
+    }
 
     std::thread(receive_loop, sock).detach();
 
@@ -77,14 +81,21 @@ int main() {
         } 
 
         if (input.rfind('/', 0) == 0) {
-            if (handle_command(input, sock)) {
+            auto result = handle_command(input, sock);
+            if (result == ChatCommands::CommandResult::Quit) {
                 break;
+            } else if (result == ChatCommands::CommandResult::Invalid) {
+                std::cout << "> ";
+                continue;
             }
-            std::cout << "> ";
-            continue;
         }
 
-        send(sock, input.c_str(), input.length(), 0);
+        if (send(sock, input.c_str(), input.length(), 0) == -1) {
+            std::cerr << "Failed to send message.\n";
+            break;
+        }
+        std::cout << "\r" << input << "\n> " << std::flush;
+        input.clear();
         std::cout << "> ";
     }
 
