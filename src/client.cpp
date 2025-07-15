@@ -11,6 +11,20 @@
 const int PORT = 5000;
 const char* SERVER_IP = "127.0.0.1";
 
+
+// Helpers
+
+bool is_valid_username(const std::string& username) {
+    constexpr size_t MAX_LENGTH = 20;
+    if (username.empty() || username.length() > MAX_LENGTH) {
+        std::cerr << "Username must be between 1 and " << MAX_LENGTH << " characters.\n";
+        return false;
+    }
+}
+
+
+// Reveive loop to handle incoming messages
+
 void receive_loop(int sock) {
     char buffer[1024];
     while (true) {
@@ -45,6 +59,8 @@ int main() {
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
     inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
+
+    
 
     if (username.empty() || username.length() > 100) {
         std::cerr << "Username cannot be empty and must be less than 100 characters.\n";
