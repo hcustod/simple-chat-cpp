@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <ctime>
 #include <algorithm>
+#include <csignal>
 
 #include "commands.h"
 
@@ -18,6 +19,14 @@ constexpr int MAX_MESSAGE_LENGTH = 1024;
 std::vector<int> clients;
 std::mutex m;
 std::unordered_map<int, std::string> client_names;
+
+volatile std::sig_atomic_t stop_server = false;
+
+void signal_handler(int signal) {
+    if (signal == SIGINT || signal == SIGTERM) {
+        stop_server = true;
+    }
+}
 
 std::string get_time() {
     time_t now = time(nullptr);
@@ -153,7 +162,10 @@ void handle_client(int client_fd) {
 
 
 int main() {
-    // Server port
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+
+    // Server port/socket creation
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (server_sock < 0) {
@@ -186,7 +198,7 @@ int main() {
     std::cout << "Server listening on port... " << PORT << std::endl;
 
     // Accept clients in a loop
-    while (true) {
+    while (!stop_server) {
         int client_conn = accept(server_sock, nullptr, nullptr);
 
         if (client_conn < 0) {
