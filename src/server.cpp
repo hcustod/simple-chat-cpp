@@ -24,6 +24,7 @@ volatile std::sig_atomic_t stop_server = false;
 
 void signal_handler(int signal) {
     if (signal == SIGINT || signal == SIGTERM) {
+        std::cout << "Received signal to stop server.\n";
         stop_server = true;
     }
 }
@@ -202,6 +203,9 @@ int main() {
         int client_conn = accept(server_sock, nullptr, nullptr);
 
         if (client_conn < 0) {
+            if (stop_server) {
+                break; // Exit loop if server is stopping
+            }
             std::cerr << "Failed to accept client connection.\n";
             continue;
         }
@@ -214,7 +218,20 @@ int main() {
         std::thread(handle_client, client_conn).detach();
     }
 
+    std::cout << "Server shutting down...\n";
     close(server_sock);
+
+    {
+        std::lock_guard<std::mutex> lock(m);
+        for (int client_fd : clients) {
+            safe_send(client_fd, "Server is shutting down. Goodbye!\n");
+            shutdown(client_fd, SHUT_RDWR); // Shutdown the client socket
+            close(client_fd); // Close the client connection
+        }
+        clients.clear();
+        client_names.clear();
+    }
+
     return 0;
 }
 
