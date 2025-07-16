@@ -35,6 +35,17 @@ std::string get_time() {
     return std::string(buffer);
 }
 
+
+bool safe_send(int fd, std::string_view data) {
+    ssize_t bytes_sent = send(fd, data.data(), data.size(), 0);
+    if (bytes_sent == -1) {
+        std::cerr << "Failed to send data to client: " << fd 
+                << " : " << strerror(errno) << "\n";
+        return false;
+    }
+    return true;
+}
+
 void handle_client(int client_fd) {
     char buffer[1024];
 
