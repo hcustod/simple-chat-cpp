@@ -13,6 +13,7 @@
 #include "commands.h"
 
 const int PORT = 5000;
+constexpr int MAX_MESSAGE_LENGTH = 1024;
 
 std::vector<int> clients;
 std::mutex m;
@@ -26,11 +27,11 @@ std::string get_time() {
     return std::string(buffer);
 }
 
+thread_local int send_fail_count = 0;
 
 bool track_send_fails(int fd) {
-    static thread_local int fail_count = 0;
-    fail_count++;
-    if (fail_count >= 3) {
+    ++send_fail_count;
+    if (send_fail_count >= 3) {
         std::cerr << "Too many send failures for client: " << fd 
                   << ". Disconnecting client.\n";
         close(fd);
@@ -41,12 +42,10 @@ bool track_send_fails(int fd) {
 
 
 void reset_send_fail_count() {
-    static thread_local int fail_count = 0;
-    fail_count = 0; // Reset the count for the current thread
+    send_fail_count = 0; // Reset the fail count for the current thread
 }
 
 bool safe_send(int fd, std::string_view data) {
-    reset_send_fail_count();
     ssize_t bytes_sent = send(fd, data.data(), data.size(), 0);
     if (bytes_sent < 0) {
         std::cerr << "Failed to send data to client: " << fd << "\n";
@@ -67,7 +66,7 @@ void broadcast(const std::string& message, int sender_fd) {
 }
 
 void handle_client(int client_fd) {
-    char buffer[1024];
+    char buffer[MAX_MESSAGE_LENGTH + 1];
 
     // Get initial username
     ssize_t name_bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
@@ -105,7 +104,7 @@ void handle_client(int client_fd) {
             return !std::isprint(c); // Remove non-printable characters
         }), msg.end());
         if (msg.empty()) continue; // Ignore empty messages
-        if (msg.length() > 1024) {
+        if (msg.length() > MAX_MESSAGE_LENGTH) {
             std::string error_msg = "Message too long. Max length is 1024 characters.\n";
             safe_send(client_fd, error_msg);
             continue; // Skip broadcasting this message
