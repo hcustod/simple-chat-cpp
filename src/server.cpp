@@ -37,13 +37,17 @@ std::string get_time() {
     return std::string(buffer);
 }
 
-thread_local int send_fail_count = 0;
+// Proper way to track send failures
+std::unordered_map<int, int> send_failures;
 
 bool track_send_fails(int fd) {
-    ++send_fail_count;
-    if (send_fail_count >= 3) {
+    std::lock_guard<std::mutex> lock(m);
+    send_failures[fd]++;
+
+    if (send_failures >= 3) {
         std::cerr << "Too many send failures for client: " << fd 
                   << ". Disconnecting client.\n";
+        send_failures.erase(fd); // Reset failure count for this client
         close(fd);
         return true; // Disconnect the client after too many failures
     }
@@ -51,8 +55,9 @@ bool track_send_fails(int fd) {
 }
 
 
-void reset_send_fail_count() {
-    send_fail_count = 0; // Reset the fail count for the current thread
+void reset_send_fail_count(int fd) {
+    std::lock_guard<std::mutex> lock(m);
+    send_failures.erase(fd); // Reset failure count for this client
 }
 
 bool safe_send(int fd, std::string_view data) {
@@ -61,7 +66,7 @@ bool safe_send(int fd, std::string_view data) {
         std::cerr << "Failed to send data to client: " << fd << "\n";
         return track_send_fails(fd);
     }
-    reset_send_fail_count();
+    reset_send_fail_count(fd);
     return true; // Successfully sent data
  
 }
@@ -151,6 +156,7 @@ void handle_client(int client_fd) {
     close(client_fd);
     {
         std::lock_guard<std::mutex> lock(m);
+        send_failures.erase(client_fd); // Remove from send failures
         clients.erase(std::remove(clients.begin(), clients.end(), client_fd), clients.end());
         client_names.erase(client_fd);
 
@@ -230,6 +236,7 @@ int main() {
         }
         clients.clear();
         client_names.clear();
+        send_failures.clear();
     }
 
     return 0;
