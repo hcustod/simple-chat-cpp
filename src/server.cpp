@@ -44,7 +44,7 @@ bool track_send_fails(int fd) {
     std::lock_guard<std::mutex> lock(m);
     send_failures[fd]++;
 
-    if (send_failures >= 3) {
+    if (send_failures[fd] >= 3) {
         std::cerr << "Too many send failures for client: " << fd 
                   << ". Disconnecting client.\n";
         send_failures.erase(fd); // Reset failure count for this client
@@ -91,6 +91,18 @@ void handle_client(int client_fd) {
     }
     buffer[name_bytes] = '\0';
     std::string client_name(buffer);
+
+    // TODO: Fix for checking duplicate usernames ****
+    std::lock_guard<std::mutex> lock(m);
+    for (const auto& [fd, name] : client_names) {
+        if (name == client_name) {
+            safe_send(client_fd, "Username already taken. Disconnecting.\n");
+            close(client_fd);
+            return;
+        }
+    }
+    client_names[client_fd] = client_name;
+
 
     {
         std::lock_guard<std::mutex> lock(m);
