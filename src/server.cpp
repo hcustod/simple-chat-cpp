@@ -103,12 +103,6 @@ void handle_client(int client_fd) {
     }
     client_names[client_fd] = client_name;
 
-
-    {
-        std::lock_guard<std::mutex> lock(m);
-        client_names[client_fd] = client_name;
-    }
-
     std::string welcome_message = client_name + " has joined the chat.\n";
     broadcast(welcome_message, client_fd);
     std::cout << welcome_message;
