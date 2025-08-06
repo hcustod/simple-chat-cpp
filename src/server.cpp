@@ -172,7 +172,11 @@ void handle_client(int client_fd) {
     }
 }
 
-
+// Function to get the number of connected client -- TODO: Where to implement this?
+int get_connected_client_count() {
+    std::lock_guard<std::mutex> lock(m);
+    return clients.size();
+}
 
 int main() {
     std::signal(SIGINT, signal_handler);
