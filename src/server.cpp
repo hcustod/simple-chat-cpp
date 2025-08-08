@@ -13,6 +13,19 @@
 
 #include "commands.h"
 
+
+// To be included in silent messages 
+constexpr int WINDOW_SECONDS = 5;          // Sliding window length
+constexpr int MAX_MSGS_PER_WINDOW = 15;    // Max messages allowed per window
+constexpr int MUTE_SECONDS = 10;           // Temporary mute duration
+
+std::unordered_map<int, int> rl_counts;          // fd -> msgs in current window
+std::unordered_map<int, time_t> rl_window_start; // fd -> window start
+std::unordered_map<int, time_t> rl_muted_until; 
+
+
+
+
 const int PORT = 5000;
 constexpr int MAX_MESSAGE_LENGTH = 1024;
 
@@ -35,6 +48,13 @@ std::string get_time() {
     char buffer[80];
     strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", local_time);
     return std::string(buffer);
+}
+
+std::string sanitize_input(std::string s) {
+    s.erase(std::remove_if(s.begin(), s.end(), [](unsigned char c) {
+        return !std::isprint(c) || c == '\n' || c == '\r' || c == '\t';
+    }), s.end());
+    return s;
 }
 
 // Proper way to track send failures
@@ -90,7 +110,7 @@ void handle_client(int client_fd) {
         return;
     }
     buffer[name_bytes] = '\0';
-    std::string client_name(buffer);
+    std::string client_name = sanitize_input(buffer);
 
     // TODO: Fix for checking duplicate usernames ****
     std::lock_guard<std::mutex> lock(m);
@@ -172,11 +192,7 @@ void handle_client(int client_fd) {
     }
 }
 
-// Function to get the number of connected client -- TODO: Where to implement this?
-int get_connected_client_count() {
-    std::lock_guard<std::mutex> lock(m);
-    return clients.size();
-}
+
 
 int main() {
     std::signal(SIGINT, signal_handler);
