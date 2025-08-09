@@ -15,6 +15,22 @@
 
 #include "commands.h"
 
+namespace { 
+    std::mutex send_m;
+    std::unordered_map<int, int> send_failures; // fd -> number of consecutive send failures
+    inline bool should_drop_fd(int fd, int threshold = 3) {
+        std::lock_guard<std::mutex> lock(send_m);
+        auto it = send_failures.find(fd);
+        return it != send_failures.end() && it->second >= threshold;
+        
+    }
+
+    inline void clear_fd_failures(int fd) {
+        std::lock_guard<std::mutex> lock(send_m);
+        send_failures.erase(fd);
+    }
+}
+
 
 
 
@@ -50,39 +66,7 @@ std::string sanitize_input(std::string s) {
     return s;
 }
 
-// Proper way to track send failures
-std::unordered_map<int, int> send_failures;
 
-bool track_send_fails(int fd) {
-    std::lock_guard<std::mutex> lock(m);
-    send_failures[fd]++;
-
-    if (send_failures[fd] >= 3) {
-        std::cerr << "Too many send failures for client: " << fd 
-                  << ". Disconnecting client.\n";
-        send_failures.erase(fd); // Reset failure count for this client
-        close(fd);
-        return true; // Disconnect the client after too many failures
-    }
-    return false; // Continue trying to send data
-}
-
-
-void reset_send_fail_count(int fd) {
-    std::lock_guard<std::mutex> lock(m);
-    send_failures.erase(fd); // Reset failure count for this client
-}
-
-bool safe_send(int fd, std::string_view data) {
-    ssize_t bytes_sent = send(fd, data.data(), data.size(), 0);
-    if (bytes_sent < 0) {
-        std::cerr << "Failed to send data to client: " << fd << "\n";
-        return track_send_fails(fd);
-    }
-    reset_send_fail_count(fd);
-    return true; // Successfully sent data
- 
-}
 
 static std::string get_time() {
     std::time_t now = std::time(nullptr);
@@ -94,10 +78,33 @@ static std::string get_time() {
 }
 
 void broadcast(const std::string& message, int sender_fd) {
-    std::lock_guard<std::mutex> lock(m);
-    for (int client_fd : clients) {
-        if (client_fd != sender_fd) {
-            safe_send(client_fd, message);
+    std::vector<int> snapshot; 
+    {
+        std::lock_guard<std::mutex> lock(m);
+        snapshot = clients; // Take a snapshot of the current clients
+    }
+
+    std::vector<int> to_remove;
+    for (int client_fd : snapshot) {
+        if (client_fd == sender_fd) {
+            continue; // Skip sending to the sender or clients that should be dropped
+        }
+        if (!ChatCommands::send_safe(client_fd, message)) {
+            if (should_drop_fd(client_fd)) {
+                std::cout << "Dropping client " << client_fd << " due to consecutive send failures.\n";
+                to_remove.push_back(client_fd); // Mark for removal
+            }
+        }
+    }
+
+    if (!to_remove.empty()) {
+        std::lock_guard<std::mutex> lock(m);
+        for (int fd : to_remove) {
+            shutdown(fd, SHUT_RDWR); // Shutdown the client socket
+            close(fd); // Close the client connection
+            clients.erase(std::remove(clients.begin(), clients.end(), fd), clients.end());
+            client_names.erase(fd); // Remove from client names
+            clear_fd_failures(fd); // Clear failures for this fd
         }
     }
 }
@@ -114,16 +121,27 @@ void handle_client(int client_fd) {
     buffer[name_bytes] = '\0';
     std::string client_name = sanitize_input(buffer);
 
-    // TODO: Fix for checking duplicate usernames ****
-    std::lock_guard<std::mutex> lock(m);
-    for (const auto& [fd, name] : client_names) {
-        if (name == client_name) {
-            safe_send(client_fd, "Username already taken. Disconnecting.\n");
-            close(client_fd);
-            return;
-        }
+    // Validate username
+    if (!ChatCommands::is_valid_username(client_name)) {
+        std::string error_msg = "Invalid username. Must be alphanumeric, underscore, or hyphen, and not empty or too long.\n";
+        ChatCommands::send_safe(client_fd, error_msg);
+        close(client_fd);
+        return;
     }
-    client_names[client_fd] = client_name;
+
+    //Check duplicate username
+    {
+        std::lock_guard<std::mutex> lock(m);
+        for (const auto& pair : client_names) {
+            if (pair.second == client_name) {
+                std::string error_msg = "Username already taken. Please choose another one.\n";
+                ChatCommands::send_safe(client_fd, error_msg);
+                close(client_fd);
+                return;
+            }
+        }
+        client_names[client_fd] = client_name;
+    }
 
     std::string welcome_message = client_name + " has joined the chat.\n";
     broadcast(welcome_message, client_fd);
@@ -149,7 +167,7 @@ void handle_client(int client_fd) {
         if (msg.empty()) continue; // Ignore empty messages
         if (msg.length() > ChatCommands::MAX_MESSAGE_LENGTH) {
             std::string error_msg = "Message too long. Max length is 1024 characters.\n";
-            safe_send(client_fd, error_msg);
+            ChatCommands::send_safe(client_fd, error_msg);
             continue; // Skip broadcasting this message
         }
 
@@ -167,7 +185,7 @@ void handle_client(int client_fd) {
             } else {
                 // Unknown command
                 std::string error_msg = "Unknown command: " + command + "\n";
-                safe_send(client_fd, error_msg);
+                ChatCommands::send_safe(client_fd, error_msg);
                 continue; // Skip broadcasting this message
 
             }
@@ -184,13 +202,14 @@ void handle_client(int client_fd) {
     close(client_fd);
     {
         std::lock_guard<std::mutex> lock(m);
-        send_failures.erase(client_fd); // Remove from send failures
+        clear_fd_failures(client_fd); // Remove from send failures
         clients.erase(std::remove(clients.begin(), clients.end(), client_fd), clients.end());
         client_names.erase(client_fd);
 
         std::string leave_message = client_name + " has left the chat.\n";
         std::cout << leave_message;
         broadcast(leave_message, client_fd);
+        close(client_fd); // Ensure the client socket is closed
     }
 }
 
@@ -258,13 +277,16 @@ int main() {
     {
         std::lock_guard<std::mutex> lock(m);
         for (int client_fd : clients) {
-            safe_send(client_fd, "Server is shutting down. Goodbye!\n");
+            ChatCommands::send_safe(client_fd, "Server is shutting down. Goodbye!\n");
             shutdown(client_fd, SHUT_RDWR); // Shutdown the client socket
             close(client_fd); // Close the client connection
         }
         clients.clear();
         client_names.clear();
-        send_failures.clear();
+        {
+            std::lock_guard<std::mutex> send_lock(send_m);
+            send_failures.clear(); // Clear all send failures
+        }
     }
 
     return 0;
