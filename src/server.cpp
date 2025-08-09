@@ -10,8 +10,12 @@
 #include <ctime>
 #include <algorithm>
 #include <csignal>
+#include <iomanip>
+#include <sstream>
 
 #include "commands.h"
+
+
 
 
 // To be included in silent messages 
@@ -24,10 +28,7 @@ std::unordered_map<int, time_t> rl_window_start; // fd -> window start
 std::unordered_map<int, time_t> rl_muted_until; 
 
 
-
-
 const int PORT = 5000;
-constexpr int MAX_MESSAGE_LENGTH = 1024;
 
 std::vector<int> clients;
 std::mutex m;
@@ -40,14 +41,6 @@ void signal_handler(int signal) {
         std::cout << "Received signal to stop server.\n";
         stop_server = true;
     }
-}
-
-std::string get_time() {
-    time_t now = time(nullptr);
-    struct tm* local_time = localtime(&now);
-    char buffer[80];
-    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", local_time);
-    return std::string(buffer);
 }
 
 std::string sanitize_input(std::string s) {
@@ -91,6 +84,15 @@ bool safe_send(int fd, std::string_view data) {
  
 }
 
+static std::string get_time() {
+    std::time_t now = std::time(nullptr);
+    std:: tm tm{};
+    localtime_r(&now, &tm); // Thread-safe version of localtime
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return oss.str();
+}
+
 void broadcast(const std::string& message, int sender_fd) {
     std::lock_guard<std::mutex> lock(m);
     for (int client_fd : clients) {
@@ -101,7 +103,7 @@ void broadcast(const std::string& message, int sender_fd) {
 }
 
 void handle_client(int client_fd) {
-    char buffer[MAX_MESSAGE_LENGTH + 1];
+    char buffer[ChatCommands::MAX_MESSAGE_LENGTH + 1];
 
     // Get initial username
     ssize_t name_bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
@@ -145,7 +147,7 @@ void handle_client(int client_fd) {
             return !std::isprint(c); // Remove non-printable characters
         }), msg.end());
         if (msg.empty()) continue; // Ignore empty messages
-        if (msg.length() > MAX_MESSAGE_LENGTH) {
+        if (msg.length() > ChatCommands::MAX_MESSAGE_LENGTH) {
             std::string error_msg = "Message too long. Max length is 1024 characters.\n";
             safe_send(client_fd, error_msg);
             continue; // Skip broadcasting this message

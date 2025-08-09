@@ -36,6 +36,14 @@ namespace ChatCommands {
 
     extern std::unordered_map<std::string, UnifiedCommand> unified_command_table;
 
-    bool is_valid_username(const std::string& name);
+    inline bool is_valid_username(const std::string& name) {
+        if (name.empty() || name.length() > MAX_USERNAME_LENGTH) {
+            return false; // Empty or too long
+        }
+        return std::all_of(name.begin(), name.end(), [](unsigned char c) {
+            return std::isalnum(c) || c == '_' || c == '-'; // Allow alphanumeric, underscore, and hyphen
+        });
+    }
+
     bool send_safe(int sock, const std::string& msg);
 } 
