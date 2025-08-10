@@ -141,12 +141,17 @@ void handle_client(int client_fd) {
             }
         }
         client_names[client_fd] = client_name;
+        clients.push_back(client_fd); // Add to clients list
     }
 
-    std::string welcome_message = client_name + " has joined the chat.\n";
-    broadcast(welcome_message, client_fd);
-    std::cout << welcome_message;
+    // Announce client joining
+    {
+        std::string welcome_message = client_name + " has joined the chat. \n";
+        broadcast(welcome_message, client_fd);
+        std::cout << welcome_message;
+    }
 
+    // Main loop to handle client messages
     while (true) {
         ssize_t bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
         if (bytes <= 0) {
@@ -157,22 +162,15 @@ void handle_client(int client_fd) {
         buffer[bytes] = '\0';
         std::string msg(buffer);
 
-        // Sanitize message
-        msg.erase(std::remove(msg.begin(), msg.end(), '\n'), msg.end()); // Remove newlines
-        msg.erase(std::remove(msg.begin(), msg.end(), '\r'), msg.end()); // Remove carriage returns
-        msg.erase(std::remove(msg.begin(), msg.end(), '\t'), msg.end()); // Remove tabs
-        msg.erase(std::remove_if(msg.begin(), msg.end(), [](unsigned char c) {
-            return !std::isprint(c); // Remove non-printable characters
-        }), msg.end());
         if (msg.empty()) continue; // Ignore empty messages
         if (msg.length() > ChatCommands::MAX_MESSAGE_LENGTH) {
             std::string error_msg = "Message too long. Max length is 1024 characters.\n";
             ChatCommands::send_safe(client_fd, error_msg);
             continue; // Skip broadcasting this message
-        }
+        }        
 
         // Handle server-side command
-        if (!msg.empty() && msg[0] == '/') {
+        if (msg[0] == '/') {
             std::istringstream iss(msg);
             std::string command;
             iss >> command;
@@ -181,15 +179,13 @@ void handle_client(int client_fd) {
             if (it != ChatCommands::unified_command_table.end() && it->second.serverHandler) {
                 // Call the server-side command handler
                 it->second.serverHandler(client_fd, msg, client_names, clients, m);
-                continue; // Skip broadcasting this message
             } else {
                 // Unknown command
                 std::string error_msg = "Unknown command: " + command + "\n";
                 ChatCommands::send_safe(client_fd, error_msg);
-                continue; // Skip broadcasting this message
-
             }
-              
+
+            continue;
         }
 
         // Handle standard message
@@ -198,8 +194,6 @@ void handle_client(int client_fd) {
         broadcast(full_msg, client_fd);
     }
 
-    // Cleanup after disconnection 
-    close(client_fd);
     {
         std::lock_guard<std::mutex> lock(m);
         clear_fd_failures(client_fd); // Remove from send failures
@@ -212,7 +206,6 @@ void handle_client(int client_fd) {
         close(client_fd); // Ensure the client socket is closed
     }
 }
-
 
 
 int main() {
