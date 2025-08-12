@@ -194,17 +194,25 @@ void handle_client(int client_fd) {
         broadcast(full_msg, client_fd);
     }
 
-    {
+    // Cleanup aver disconnection
+    std::string name_snapshot;
+    { 
         std::lock_guard<std::mutex> lock(m);
-        clear_fd_failures(client_fd); // Remove from send failures
-        clients.erase(std::remove(clients.begin(), clients.end(), client_fd), clients.end());
-        client_names.erase(client_fd);
-
-        std::string leave_message = client_name + " has left the chat.\n";
-        std::cout << leave_message;
-        broadcast(leave_message, client_fd);
-        close(client_fd); // Ensure the client socket is closed
+        name_snapshot = client_names[client_fd];
     }
+
+    std::string full_message = get_time() + " " + name_snapshot + " has left the chat.\n";
+    std::cout << full_message;
+    broadcast(full_message, client_fd);
+    
+    // Anncounce client leaving
+    {
+        std::string leave_message = client_name + " has left the chat.\n";
+        broadcast(leave_message, client_fd);
+        std::cout << leave_message;
+    }
+    
+    close(client_fd); // Close the client connection
 }
 
 
@@ -254,11 +262,6 @@ int main() {
             }
             std::cerr << "Failed to accept client connection.\n";
             continue;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(m);
-            clients.push_back(client_conn);
         }
 
         std::thread(handle_client, client_conn).detach();
