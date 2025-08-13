@@ -32,8 +32,6 @@ namespace {
 }
 
 
-
-
 // To be included in silent messages 
 constexpr int WINDOW_SECONDS = 5;          // Sliding window length
 constexpr int MAX_MSGS_PER_WINDOW = 15;    // Max messages allowed per window
@@ -160,8 +158,7 @@ void handle_client(int client_fd) {
         }
 
         buffer[bytes] = '\0';
-        std::string msg(buffer);
-
+        std::string msg = sanitize_input(buffer);
         if (msg.empty()) continue; // Ignore empty messages
         if (msg.length() > ChatCommands::MAX_MESSAGE_LENGTH) {
             std::string error_msg = "Message too long. Max length is 1024 characters.\n";
@@ -189,29 +186,35 @@ void handle_client(int client_fd) {
         }
 
         // Handle standard message
+        std::string name_snapshot;
+        {
+            std::lock_guard<std::mutex> lock(m);
+            auto it = client_names.find(client_fd);
+            name_snapshot = (it != client_names.end()) ? it->second : client_name;
+        }
         std::string full_msg = get_time() + " " + client_names[client_fd] + ": " + msg + "\n";
         std::cout << full_msg;
         broadcast(full_msg, client_fd);
     }
 
-    // Cleanup aver disconnection
+    // Cleanup after disconnection
     std::string name_snapshot;
     { 
         std::lock_guard<std::mutex> lock(m);
-        name_snapshot = client_names[client_fd];
+        auto it = client_names.find(client_fd);
+        name_snapshot = (it != client_names.end()) ? it->second : client_name;
+
+        clients.erase(std::remove(clients.begin(), clients.end(), client_fd), clients.end());
+        client_names.erase(client_fd); // Remove from client names
+    }
+    {
+        std::lock_guard<std::mutex> send_lock(send_m);
+        clear_fd_failures(client_fd); // Clear failures for this fd
     }
 
     std::string full_message = get_time() + " " + name_snapshot + " has left the chat.\n";
     std::cout << full_message;
     broadcast(full_message, client_fd);
-    
-    // Anncounce client leaving
-    {
-        std::string leave_message = client_name + " has left the chat.\n";
-        broadcast(leave_message, client_fd);
-        std::cout << leave_message;
-    }
-    
     close(client_fd); // Close the client connection
 }
 
@@ -219,6 +222,7 @@ void handle_client(int client_fd) {
 int main() {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
+    std::signal(SIGPIPE, SIG_IGN); // Ignore broken pipe signals
 
     // Server port/socket creation
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -231,6 +235,9 @@ int main() {
     // Set socket options to reuse address (for quick server restarts)
     int opt = 1;
     setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    int one = 1;
+    setsockopt(server_sock, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
 
     // Set server addr
     sockaddr_in addr{};
@@ -257,6 +264,9 @@ int main() {
         int client_conn = accept(server_sock, nullptr, nullptr);
 
         if (client_conn < 0) {
+            if (errno == EINTR) {
+                continue; // Interrupted by signal, retry accept
+            }
             if (stop_server) {
                 break; // Exit loop if server is stopping
             }
@@ -270,19 +280,30 @@ int main() {
     std::cout << "Server shutting down...\n";
     close(server_sock);
 
+    // Snapshot under lock
+    std::vector<int> fds;
     {
         std::lock_guard<std::mutex> lock(m);
-        for (int client_fd : clients) {
-            ChatCommands::send_safe(client_fd, "Server is shutting down. Goodbye!\n");
-            shutdown(client_fd, SHUT_RDWR); // Shutdown the client socket
-            close(client_fd); // Close the client connection
-        }
-        clients.clear();
-        client_names.clear();
-        {
-            std::lock_guard<std::mutex> send_lock(send_m);
-            send_failures.clear(); // Clear all send failures
-        }
+        fds = clients; // Get current client fds
+    }
+
+    // Send and close without blocking
+    for (int fd : fds) {
+        ChatCommands::send_safe(fd, "Server is shutting down. Goodbye!\n");
+        shutdown(fd, SHUT_RDWR); // Shutdown the client socket
+        close(fd); // Close the client connection
+    }
+
+    // Prune under lock
+    {
+        std::lock_guard<std::mutex> lock(m);
+        clients.clear(); // Clear the client list
+        client_names.clear(); // Clear client names
+    }
+    {
+        std::lock_guard<std::mutex> send_lock(send_m);
+        send_failures.clear(); // Clear send failures
+
     }
 
     return 0;
