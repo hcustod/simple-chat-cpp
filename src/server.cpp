@@ -12,6 +12,9 @@
 #include <csignal>
 #include <iomanip>
 #include <sstream>
+#include <cerrno>
+#include <cctype>
+#include <sys/socket.h>
 
 #include "commands.h"
 
@@ -37,11 +40,6 @@ constexpr int WINDOW_SECONDS = 5;          // Sliding window length
 constexpr int MAX_MSGS_PER_WINDOW = 15;    // Max messages allowed per window
 constexpr int MUTE_SECONDS = 10;           // Temporary mute duration
 
-std::unordered_map<int, int> rl_counts;          // fd -> msgs in current window
-std::unordered_map<int, time_t> rl_window_start; // fd -> window start
-std::unordered_map<int, time_t> rl_muted_until; 
-
-
 const int PORT = 5000;
 
 std::vector<int> clients;
@@ -49,11 +47,26 @@ std::mutex m;
 std::unordered_map<int, std::string> client_names;
 
 volatile std::sig_atomic_t stop_server = false;
+volatile std::sig_atomic_t last_signal = 0;
 
 void signal_handler(int signal) {
+    last_signal = signal;
     if (signal == SIGINT || signal == SIGTERM) {
-        std::cout << "Received signal to stop server.\n";
         stop_server = true;
+    }
+}
+
+void print_signal_message(int signal) {
+    switch (signal) {
+        case SIGINT:
+            std::cout << "Received SIGINT (Ctrl+C). Stopping server...\n";
+            break;
+        case SIGTERM:
+            std::cout << "Received SIGTERM. Stopping server...\n";
+            break;
+        default:
+            std::cout << "Received signal " << signal << ". Stopping server...\n";
+            break;
     }
 }
 
@@ -65,14 +78,18 @@ std::string sanitize_input(std::string s) {
 }
 
 
-
 static std::string get_time() {
     std::time_t now = std::time(nullptr);
-    std:: tm tm{};
+    std::tm tm{};
     localtime_r(&now, &tm); // Thread-safe version of localtime
     std::ostringstream oss;
     oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return oss.str();
+}
+
+inline void record_send_failure(int fd) {
+    std::lock_guard<std::mutex> lock(send_m);
+    ++send_failures[fd];
 }
 
 void broadcast(const std::string& message, int sender_fd) {
@@ -87,7 +104,10 @@ void broadcast(const std::string& message, int sender_fd) {
         if (client_fd == sender_fd) {
             continue; // Skip sending to the sender or clients that should be dropped
         }
-        if (!ChatCommands::send_safe(client_fd, message)) {
+        if (ChatCommands::send_safe(client_fd, message)) {
+            clear_fd_failures(client_fd);
+         } else {
+            record_send_failure(client_fd); // Record the failure
             if (should_drop_fd(client_fd)) {
                 std::cout << "Dropping client " << client_fd << " due to consecutive send failures.\n";
                 to_remove.push_back(client_fd); // Mark for removal
@@ -96,13 +116,20 @@ void broadcast(const std::string& message, int sender_fd) {
     }
 
     if (!to_remove.empty()) {
-        std::lock_guard<std::mutex> lock(m);
-        for (int fd : to_remove) {
+        std::vector<int> to_shutdown;
+        {
+            std::lock_guard<std::mutex> lock(m);
+            for (int fd : to_remove) {
+                clients.erase(std::remove(clients.begin(), clients.end(), fd), clients.end());
+                client_names.erase(fd); // Remove from client names
+                to_shutdown.push_back(fd); // Collect fds to shutdown
+            }
+        }
+
+        for (int fd : to_shutdown) {
             shutdown(fd, SHUT_RDWR); // Shutdown the client socket
-            close(fd); // Close the client connection
-            clients.erase(std::remove(clients.begin(), clients.end(), fd), clients.end());
-            client_names.erase(fd); // Remove from client names
             clear_fd_failures(fd); // Clear failures for this fd
+            // Allow handle_client to own the final close
         }
     }
 }
@@ -144,9 +171,9 @@ void handle_client(int client_fd) {
 
     // Announce client joining
     {
-        std::string welcome_message = client_name + " has joined the chat. \n";
+        std::string welcome_message = client_name + " has joined the chat.\n";
+        ChatCommands::send_safe(client_fd, welcome_message); // Send welcome message to the new client
         broadcast(welcome_message, client_fd);
-        std::cout << welcome_message;
     }
 
     // Main loop to handle client messages
@@ -192,7 +219,7 @@ void handle_client(int client_fd) {
             auto it = client_names.find(client_fd);
             name_snapshot = (it != client_names.end()) ? it->second : client_name;
         }
-        std::string full_msg = get_time() + " " + client_names[client_fd] + ": " + msg + "\n";
+        std::string full_msg = get_time() + " " + name_snapshot + ": " + msg + "\n";
         std::cout << full_msg;
         broadcast(full_msg, client_fd);
     }
@@ -208,7 +235,6 @@ void handle_client(int client_fd) {
         client_names.erase(client_fd); // Remove from client names
     }
     {
-        std::lock_guard<std::mutex> send_lock(send_m);
         clear_fd_failures(client_fd); // Clear failures for this fd
     }
 
@@ -262,14 +288,12 @@ int main() {
     // Accept clients in a loop
     while (!stop_server) {
         int client_conn = accept(server_sock, nullptr, nullptr);
-
         if (client_conn < 0) {
-            if (errno == EINTR) {
-                continue; // Interrupted by signal, retry accept
+            if (errno == EINTR) {                 // interrupted by signal
+                if (stop_server) break;           // asked to stop
+                continue;                         // try again
             }
-            if (stop_server) {
-                break; // Exit loop if server is stopping
-            }
+            if (stop_server) break;
             std::cerr << "Failed to accept client connection.\n";
             continue;
         }
@@ -278,6 +302,9 @@ int main() {
     }
 
     std::cout << "Server shutting down...\n";
+    if (last_signal) {
+        print_signal_message(last_signal);
+    }
     close(server_sock);
 
     // Snapshot under lock
@@ -287,11 +314,10 @@ int main() {
         fds = clients; // Get current client fds
     }
 
-    // Send and close without blocking
+    // Send without blocking
     for (int fd : fds) {
         ChatCommands::send_safe(fd, "Server is shutting down. Goodbye!\n");
         shutdown(fd, SHUT_RDWR); // Shutdown the client socket
-        close(fd); // Close the client connection
     }
 
     // Prune under lock
