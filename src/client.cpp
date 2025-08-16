@@ -19,24 +19,7 @@ static std::atomic<bool> running(true);
 static int g_sock = -1;
 
 // Helper functions
-static bool send_all(int sock, const char* data, size_t len) {
-    size_t total_sent = 0;
-    while (total_sent < len) {
-        ssize_t n = send(sock, data + total_sent, len - total_sent, 0);
-        if (n > 0) {
-            total_sent += static_cast<size_t>(n);
-            continue;
-        }
-        if (n == -1 && (errno == EINTR)) {
-            continue; // interrupted, retry
-        }
-        if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            continue; // would block; retry on blocking sockets
-        }
-        return false; // other error or connection closed
-    }
-    return true;
-}
+
 
 static void trim(std::string& str) {
     const char* ws = " \t\r\n";
@@ -54,14 +37,6 @@ void sigint_handler(int) {
     }
 }
 
-bool is_valid_username(const std::string& username) {
-    constexpr std::size_t MAX_USERNAME_LENGTH = 30;
-    if (username.empty() || username.length() > MAX_USERNAME_LENGTH) {
-        return false; // Empty or too long
-    }
-    return true;
-}
-
 // Reveive loop to handle incoming messages
 void receive_loop(int sock) {
     char buffer[ChatCommands::MAX_MESSAGE_LENGTH + 1];
@@ -70,10 +45,13 @@ void receive_loop(int sock) {
         if (bytes <= 0) {
             std::cout << "Server disconnected.\n";
             running = false;
+            std::raise(SIGINT); // Trigger main thread to exit
             break;
         }
         buffer[bytes] = '\0';
-        std::cout << "\r" << buffer << "\n> " << std::flush;
+        std::cout << "\r" << buffer;
+        if (buffer[bytes-1] != '\n') std::cout << '\n';
+        std::cout << "> " << std::flush;
     }
 }
 
@@ -110,7 +88,7 @@ int main() {
 
     // Match server side username validation
     if (!ChatCommands::is_valid_username(username)) {
-        std::cerr << "Invalid username. Must be 1-100 characters, alphanumeric or underscores only.\n";
+        std::cerr << "Invalid username. Must be 1-32 characters: letters, digits, '_' or '-'.\n";
         g_sock = -1; // Reset global socket
         return 1;
     }
@@ -153,7 +131,7 @@ int main() {
     }
 
     // Send username first as server expects it
-    if (!send_all(sock, username.c_str(), username.length())) {
+    if (!ChatCommands::send_safe(sock, username)) {
         std::cerr << "Failed to send username: " << std::strerror(errno) << "\n";
         close(sock);
         g_sock = -1; // Reset global socket
@@ -191,7 +169,7 @@ int main() {
             continue;
         }
 
-        if (!send_all(sock, input.c_str(), input.size())) {
+        if (!ChatCommands::send_safe(sock, input)) {
             std::cerr << "Failed to send message: " << std::strerror(errno) << "\n";
             break;
         }

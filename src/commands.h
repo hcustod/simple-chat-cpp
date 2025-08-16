@@ -6,13 +6,16 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <chrono>
 
 namespace ChatCommands {
 
-    constexpr std::size_t MAX_MESSAGE_LENGTH = 1024;
-    constexpr std::size_t MAX_USERNAME_LENGTH = 32;
-    constexpr int PING_COOLDOWN_SECONDS = 5;
+    // Constants (header-only, safe as constexprs)
+    constexpr std::size_t MAX_MESSAGE_LENGTH   = 1024;
+    constexpr std::size_t MAX_USERNAME_LENGTH  = 32;
+    constexpr int         PING_COOLDOWN_SECONDS = 5;
 
+    // Result of client-side command processing
     enum class CommandResult {
         Continue,
         Quit,
@@ -29,21 +32,17 @@ namespace ChatCommands {
         std::mutex& m
     )>;
 
-    using UnifiedCommand = struct {
+    struct UnifiedCommand {
         ClientCommandHandler clientHandler;
         ServerCommandHandler serverHandler;
     };
 
+    // ---- Declarations (definitions live in commands.cpp) ----
+    bool is_valid_username(const std::string& name);
+    bool send_safe(int sock, const std::string& msg);
+
+    extern const std::string help_text;
+    extern std::chrono::steady_clock::time_point last_ping_time;
     extern std::unordered_map<std::string, UnifiedCommand> unified_command_table;
 
-    inline bool is_valid_username(const std::string& name) {
-        if (name.empty() || name.length() > MAX_USERNAME_LENGTH) {
-            return false; // Empty or too long
-        }
-        return std::all_of(name.begin(), name.end(), [](unsigned char c) {
-            return std::isalnum(c) || c == '_' || c == '-'; // Allow alphanumeric, underscore, and hyphen
-        });
-    }
-
-    bool send_safe(int sock, const std::string& msg);
-} 
+} // namespace ChatCommands

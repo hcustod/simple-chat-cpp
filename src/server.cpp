@@ -34,12 +34,6 @@ namespace {
     }
 }
 
-
-// To be included in silent messages 
-constexpr int WINDOW_SECONDS = 5;          // Sliding window length
-constexpr int MAX_MSGS_PER_WINDOW = 15;    // Max messages allowed per window
-constexpr int MUTE_SECONDS = 10;           // Temporary mute duration
-
 const int PORT = 5000;
 
 std::vector<int> clients;
@@ -220,6 +214,10 @@ void handle_client(int client_fd) {
             name_snapshot = (it != client_names.end()) ? it->second : client_name;
         }
         std::string full_msg = get_time() + " " + name_snapshot + ": " + msg + "\n";
+        if (full_msg.size() > ChatCommands::MAX_MESSAGE_LENGTH) {
+        ChatCommands::send_safe(client_fd, "Message too long. Max length is 1024 characters.\n");
+        continue;
+    }
         std::cout << full_msg;
         broadcast(full_msg, client_fd);
     }
