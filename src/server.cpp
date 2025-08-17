@@ -86,6 +86,33 @@ inline void record_send_failure(int fd) {
     ++send_failures[fd];
 }
 
+static bool recv_into_buffer(int fd, std::string& buf) {
+    for (;;) {
+        char temp[4096];
+        ssize_t n = recv(fd, temp, sizeof(temp), 0);
+        if (n > 0) {
+            buf.append(temp, static_cast<size_t>(n));
+            return true;
+        }
+        if (n == 0) return false;                    // clean close
+        if (errno == EINTR) continue;                // interrupted by signal → retry
+        if (errno == EAGAIN || errno == EWOULDBLOCK) // shouldn't happen on blocking sockets
+            continue;
+        return false;                                // real error
+    }
+}
+
+static bool pop_line(std::string& buf, std::string& line) {
+    size_t pos = buf.find('\n');
+    if (pos == std::string::npos) return false;
+    line = buf.substr(0, pos);
+    if (!line.empty() && line.back() == '\r') {
+        line.pop_back(); // Remove trailing \r if present
+    }
+    buf.erase(0, pos + 1);
+    return true;
+}
+
 void broadcast(const std::string& message, int sender_fd) {
     std::vector<int> snapshot; 
     {
@@ -129,25 +156,28 @@ void broadcast(const std::string& message, int sender_fd) {
 }
 
 void handle_client(int client_fd) {
-    char buffer[ChatCommands::MAX_MESSAGE_LENGTH + 1];
+    std::string inbuf;
+    std::string client_name;
 
-    // Get initial username
-    ssize_t name_bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-    if (name_bytes <= 0) {
-        close(client_fd);
-        return;
+    std::string line;
+    while (true) {
+        if (pop_line(inbuf, line)) {
+            break; // Got a full line
+        }
+        if (!recv_into_buffer(client_fd, inbuf)) { 
+            close(client_fd);
+            return; // Connection closed or error
+        }
     }
-    buffer[name_bytes] = '\0';
-    std::string client_name = sanitize_input(buffer);
 
-    // Validate username
+    client_name = sanitize_input(line);
+
     if (!ChatCommands::is_valid_username(client_name)) {
         std::string error_msg = "Invalid username. Must be alphanumeric, underscore, or hyphen, and not empty or too long.\n";
         ChatCommands::send_safe(client_fd, error_msg);
         close(client_fd);
         return;
     }
-
     //Check duplicate username
     {
         std::lock_guard<std::mutex> lock(m);
@@ -172,54 +202,52 @@ void handle_client(int client_fd) {
 
     // Main loop to handle client messages
     while (true) {
-        ssize_t bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-        if (bytes <= 0) {
-            std::cout << "Client disconnected: " << client_name << "\n";
-            break;
-        }
+        // drain lines already in buffer
+        std::string msg;
+        while (pop_line(inbuf, msg)) {
+            msg = sanitize_input(msg);
+            if (msg.empty()) continue; // Ignore empty messages
 
-        buffer[bytes] = '\0';
-        std::string msg = sanitize_input(buffer);
-        if (msg.empty()) continue; // Ignore empty messages
-        if (msg.length() > ChatCommands::MAX_MESSAGE_LENGTH) {
-            std::string error_msg = "Message too long. Max length is 1024 characters.\n";
-            ChatCommands::send_safe(client_fd, error_msg);
-            continue; // Skip broadcasting this message
-        }        
+            // Handle server-side command
+            if (msg[0] == '/') {
+                std::istringstream iss(msg);
+                std::string command;
+                iss >> command;
 
-        // Handle server-side command
-        if (msg[0] == '/') {
-            std::istringstream iss(msg);
-            std::string command;
-            iss >> command;
+                auto it = ChatCommands::unified_command_table.find(command);
+                if (it != ChatCommands::unified_command_table.end() && it->second.serverHandler) {
+                    // Call the server-side command handler
+                    it->second.serverHandler(client_fd, msg, client_names, clients, m);
+                } else {
+                    // Unknown command
+                    std::string error_msg = "Unknown command: " + command + "\n";
+                    ChatCommands::send_safe(client_fd, error_msg);
+                }
 
-            auto it = ChatCommands::unified_command_table.find(command);
-            if (it != ChatCommands::unified_command_table.end() && it->second.serverHandler) {
-                // Call the server-side command handler
-                it->second.serverHandler(client_fd, msg, client_names, clients, m);
-            } else {
-                // Unknown command
-                std::string error_msg = "Unknown command: " + command + "\n";
-                ChatCommands::send_safe(client_fd, error_msg);
+                continue;
             }
 
-            continue;
+            // Handle standard message
+            std::string name_snapshot;
+            {
+                std::lock_guard<std::mutex> lock(m);
+                auto it = client_names.find(client_fd);
+                name_snapshot = (it != client_names.end()) ? it->second : client_name;
+            }
+            std::string full_msg = get_time() + " " + name_snapshot + ": " + msg + "\n";
+            if (full_msg.size() > ChatCommands::MAX_MESSAGE_LENGTH) {
+                ChatCommands::send_safe(client_fd, "Message too long. Max length is " + std::to_string(ChatCommands::MAX_MESSAGE_LENGTH) + " characters.\n");
+                continue;
+        }
+            std::cout << full_msg;
+            broadcast(full_msg, client_fd);
         }
 
-        // Handle standard message
-        std::string name_snapshot;
-        {
-            std::lock_guard<std::mutex> lock(m);
-            auto it = client_names.find(client_fd);
-            name_snapshot = (it != client_names.end()) ? it->second : client_name;
+        if (!recv_into_buffer(client_fd, inbuf)) {
+            std::cout << "Client " << client_name << " disconnected.\n";
+            break; // Connection closed or error
         }
-        std::string full_msg = get_time() + " " + name_snapshot + ": " + msg + "\n";
-        if (full_msg.size() > ChatCommands::MAX_MESSAGE_LENGTH) {
-        ChatCommands::send_safe(client_fd, "Message too long. Max length is 1024 characters.\n");
-        continue;
-    }
-        std::cout << full_msg;
-        broadcast(full_msg, client_fd);
+
     }
 
     // Cleanup after disconnection
