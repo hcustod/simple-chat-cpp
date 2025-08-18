@@ -131,7 +131,7 @@ int main() {
     }
 
     // Send username first as server expects it
-    if (!ChatCommands::send_safe(sock, username)) {
+    if (!ChatCommands::send_safe(sock, username + std::string("\n"))) {
         std::cerr << "Failed to send username: " << std::strerror(errno) << "\n";
         close(sock);
         g_sock = -1; // Reset global socket
@@ -169,7 +169,7 @@ int main() {
             continue;
         }
 
-        if (!ChatCommands::send_safe(sock, input)) {
+        if (!ChatCommands::send_safe(sock, input + std::string("\n"))) {
             std::cerr << "Failed to send message: " << std::strerror(errno) << "\n";
             break;
         }

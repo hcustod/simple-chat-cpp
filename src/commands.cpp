@@ -100,7 +100,7 @@ std::unordered_map<std::string, UnifiedCommand> unified_command_table = {
         {
             // Client
             [](std::istringstream&, int sock) {
-                return send_safe(sock, "/who") ? CommandResult::Continue : CommandResult::Invalid;
+                return send_safe(sock, "/who\n") ? CommandResult::Continue : CommandResult::Invalid;
             },
             // Server
             [](int client_fd, const std::string&, std::unordered_map<int, std::string>& client_names, std::vector<int>&, std::mutex& m) {
@@ -128,7 +128,7 @@ std::unordered_map<std::string, UnifiedCommand> unified_command_table = {
                     return CommandResult::Invalid;
                 }
 
-                std::string full = "/whisper " + user + " " + message;
+                std::string full = "/whisper " + user + " " + message + "\n";
                 return send_safe(sock, full) ? CommandResult::Continue : CommandResult::Invalid;
             },
             // Server
@@ -164,7 +164,7 @@ std::unordered_map<std::string, UnifiedCommand> unified_command_table = {
                     return CommandResult::Invalid;
                 }
 
-                return send_safe(sock, std::string("/name ") + new_name)
+                return send_safe(sock, std::string("/name ") + new_name) + "\n"
                        ? CommandResult::Continue : CommandResult::Invalid;
             },
             // Server
@@ -216,7 +216,7 @@ std::unordered_map<std::string, UnifiedCommand> unified_command_table = {
                 }
 
                 last_ping_time = now;
-                return send_safe(sock, "/ping") ? CommandResult::Continue : CommandResult::Invalid;
+                return send_safe(sock, "/ping\n") ? CommandResult::Continue : CommandResult::Invalid;
             },
             // Server
             [](int client_fd, const std::string&, std::unordered_map<int, std::string>&, std::vector<int>&, std::mutex&) {
