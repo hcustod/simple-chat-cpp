@@ -173,7 +173,7 @@ int main() {
             std::cerr << "Failed to send message: " << std::strerror(errno) << "\n";
             break;
         }
-        std::cout << "\r" << input << "\n> " << std::flush;
+        std::cout << "> " << std::flush;
         input.clear();
     }
 
