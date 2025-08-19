@@ -1,0 +1,12 @@
+/bin/
+/build/
+/out/
+/*.o
+/*.obj
+/*.exe
+/*.log
+/.idea/
+/.vscode/
+/.vs/
+.DS_Store
+Thumbs.db
